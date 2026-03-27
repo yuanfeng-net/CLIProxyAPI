@@ -18,10 +18,14 @@ import (
 )
 
 // RoundRobinSelector provides a simple provider scoped round-robin selection strategy.
+// Each credential is used for a random burst of 1-10 consecutive requests before rotating
+// to the next one, simulating natural usage patterns.
 type RoundRobinSelector struct {
 	mu      sync.Mutex
 	cursors map[string]int
-	maxKeys int
+	// sticky tracks how many requests remain on the current credential per key.
+	sticky    map[string]int
+	maxKeys   int
 }
 
 // FillFirstSelector selects the first available credential (deterministic ordering).
@@ -302,13 +306,23 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 		return group[innerIndex%len(group)], nil
 	}
 
-	// Flat round-robin for non-grouped auths (original behavior).
+	// Flat round-robin for non-grouped auths with sticky burst.
 	s.ensureCursorKey(key, limit)
-	index := s.cursors[key]
-	if index >= 2_147_483_640 {
-		index = 0
+	if s.sticky == nil {
+		s.sticky = make(map[string]int)
 	}
-	s.cursors[key] = index + 1
+	remaining := s.sticky[key]
+	if remaining <= 0 {
+		// Burst exhausted — advance cursor and pick a new random burst size (1-10).
+		index := s.cursors[key]
+		if index >= 2_147_483_640 {
+			index = 0
+		}
+		s.cursors[key] = index + 1
+		remaining = 1 + rand.IntN(10)
+	}
+	s.sticky[key] = remaining - 1
+	index := s.cursors[key]
 	s.mu.Unlock()
 	return available[index%len(available)], nil
 }
@@ -318,6 +332,7 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 func (s *RoundRobinSelector) ensureCursorKey(key string, limit int) {
 	if _, ok := s.cursors[key]; !ok && len(s.cursors) >= limit {
 		s.cursors = make(map[string]int)
+		s.sticky = make(map[string]int)
 	}
 }
 
@@ -403,7 +418,8 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 				return false, blockReasonNone, time.Time{}
 			}
 		}
-		return false, blockReasonNone, time.Time{}
+		// No per-model state found — fall through to check auth-level quota/unavailable.
+		// This ensures that auth-wide cooldowns (e.g. from quota probe) block all models.
 	}
 	if auth.Unavailable && auth.NextRetryAfter.After(now) {
 		next := auth.NextRetryAfter

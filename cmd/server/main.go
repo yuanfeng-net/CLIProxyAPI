@@ -30,8 +30,12 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/tui"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
+	managementHandlers "github.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -496,6 +500,38 @@ func main() {
 		if localModel && (!tuiMode || standalone) {
 			log.Info("Local model mode: using embedded model catalog, remote model updates disabled")
 		}
+		// Build shared builder options (PG state cache + usage logging when available).
+		var builderOpts []cmd.BuilderOption
+		if usePostgresStore && pgStoreInst != nil {
+			if pgDB := pgStoreInst.DB(); pgDB != nil {
+				pgSchema := pgStoreInst.Schema()
+				if stateBackend, errState := coreauth.NewPgStateBackend(pgDB, pgSchema); errState == nil {
+					builderOpts = append(builderOpts, func(b *cliproxy.Builder) {
+						b.WithStateCacheBackend(stateBackend)
+					})
+					log.Info("PostgreSQL runtime state cache enabled")
+				} else {
+					log.Warnf("failed to initialize PG state backend, falling back to file: %v", errState)
+				}
+				if usagePlugin, errUsage := usage.NewPgUsagePlugin(pgDB, pgSchema); errUsage == nil {
+					coreusage.RegisterPlugin(usagePlugin)
+					if errRestore := usagePlugin.RestoreToStats(usage.GetRequestStatistics()); errRestore != nil {
+						log.Warnf("failed to restore usage statistics from PG: %v", errRestore)
+					}
+					log.Info("PostgreSQL usage logging enabled")
+				} else {
+					log.Warnf("failed to initialize PG usage plugin: %v", errUsage)
+				}
+				if kvBackend, errKV := managementHandlers.NewPgKVBackend(pgDB, pgSchema); errKV == nil {
+					builderOpts = append(builderOpts, func(b *cliproxy.Builder) {
+						b.WithServerOptions(api.WithKVBackend(kvBackend))
+					})
+					log.Info("PostgreSQL panel settings (KV store) enabled")
+				} else {
+					log.Warnf("failed to initialize PG KV backend: %v", errKV)
+				}
+			}
+		}
 		if tuiMode {
 			if standalone {
 				// Standalone mode: start an embedded local server and connect TUI client to it.
@@ -532,7 +568,7 @@ func main() {
 					password = localMgmtPassword
 				}
 
-				cancel, done := cmd.StartServiceBackground(cfg, configFilePath, password)
+				cancel, done := cmd.StartServiceBackground(cfg, configFilePath, password, builderOpts...)
 
 				client := tui.NewClient(cfg.Port, password)
 				ready := false
@@ -578,7 +614,7 @@ func main() {
 			if !localModel {
 				registry.StartModelsUpdater(context.Background())
 			}
-			cmd.StartService(cfg, configFilePath, password)
+			cmd.StartService(cfg, configFilePath, password, builderOpts...)
 		}
 	}
 }

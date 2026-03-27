@@ -246,6 +246,12 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		h.listAuthFilesFromDisk(c)
 		return
 	}
+
+	// When ?probe=true, run quota probe first to refresh cooldown state.
+	if strings.EqualFold(strings.TrimSpace(c.Query("probe")), "true") && h.authManager != nil {
+		h.authManager.ProbeAllQuota(c.Request.Context())
+	}
+
 	auths := h.authManager.List()
 	files := make([]gin.H, 0, len(auths))
 	for _, auth := range auths {
@@ -413,6 +419,28 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	}
 	if !auth.NextRetryAfter.IsZero() {
 		entry["next_retry_after"] = auth.NextRetryAfter
+	}
+	// Quota state for the management panel.
+	if auth.Quota.Exceeded {
+		entry["quota_exceeded"] = true
+		if !auth.Quota.NextRecoverAt.IsZero() {
+			entry["quota_recover_at"] = auth.Quota.NextRecoverAt
+		}
+		if auth.Quota.Reason != "" {
+			entry["quota_reason"] = auth.Quota.Reason
+		}
+	}
+	if auth.LastError != nil && auth.LastError.Message != "" {
+		entry["last_error"] = auth.LastError.Message
+	}
+	// Include cached usage info if available.
+	if h.authManager != nil {
+		if usageRaw := h.authManager.GetUsageInfo(auth.ID); len(usageRaw) > 0 {
+			var usageData map[string]any
+			if json.Unmarshal(usageRaw, &usageData) == nil {
+				entry["usage_info"] = usageData
+			}
+		}
 	}
 	if path != "" {
 		entry["path"] = path

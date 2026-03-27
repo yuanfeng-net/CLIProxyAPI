@@ -107,6 +107,22 @@ func (s *PostgresStore) Close() error {
 	return s.db.Close()
 }
 
+// DB returns the underlying database connection for reuse by other components.
+func (s *PostgresStore) DB() *sql.DB {
+	if s == nil {
+		return nil
+	}
+	return s.db
+}
+
+// Schema returns the configured PostgreSQL schema name (may be empty).
+func (s *PostgresStore) Schema() string {
+	if s == nil {
+		return ""
+	}
+	return s.cfg.Schema
+}
+
 // EnsureSchema creates the required tables (and schema when provided).
 func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 	if s == nil || s.db == nil {

@@ -128,13 +128,14 @@ func (NoopHook) OnResult(context.Context, Result) {}
 
 // Manager orchestrates auth lifecycle, selection, execution, and persistence.
 type Manager struct {
-	store     Store
-	executors map[string]ProviderExecutor
-	selector  Selector
-	hook      Hook
-	mu        sync.RWMutex
-	auths     map[string]*Auth
-	scheduler *authScheduler
+	store      Store
+	stateCache *runtimeStateCache
+	executors  map[string]ProviderExecutor
+	selector   Selector
+	hook       Hook
+	mu         sync.RWMutex
+	auths      map[string]*Auth
+	scheduler  *authScheduler
 	// providerOffsets tracks per-model provider rotation state for multi-provider routing.
 	providerOffsets map[string]int
 
@@ -246,6 +247,31 @@ func (m *Manager) SetSelector(selector Selector) {
 	if m.scheduler != nil {
 		m.scheduler.setSelector(selector)
 		m.syncScheduler()
+	}
+}
+
+// SetStateCacheDir initializes the runtime state cache with a file-based backend
+// for persisting cooldown/quota state across restarts.
+func (m *Manager) SetStateCacheDir(dir string) {
+	if m == nil || dir == "" {
+		return
+	}
+	m.stateCache = newRuntimeStateCache(NewFileStateBackend(dir))
+}
+
+// SetStateCacheBackend initializes the runtime state cache with a custom backend
+// (e.g. PostgreSQL) for persisting cooldown/quota state across restarts.
+func (m *Manager) SetStateCacheBackend(backend StateStoreBackend) {
+	if m == nil || backend == nil {
+		return
+	}
+	m.stateCache = newRuntimeStateCache(backend)
+}
+
+// StopStateCache shuts down the background state cache save loop.
+func (m *Manager) StopStateCache() {
+	if m != nil && m.stateCache != nil {
+		m.stateCache.Stop()
 	}
 }
 
@@ -899,6 +925,10 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		auth.ID = uuid.NewString()
 	}
 	auth.EnsureIndex()
+	// Restore persisted runtime state (cooldown/quota) from the state cache.
+	if m.stateCache != nil {
+		m.stateCache.ApplyTo(auth)
+	}
 	authClone := auth.Clone()
 	m.mu.Lock()
 	m.auths[auth.ID] = authClone
@@ -925,6 +955,22 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 		}
 		if len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
 			auth.ModelStates = existing.ModelStates
+		}
+		// Preserve runtime cooldown/quota state from the existing entry when the
+		// incoming auth (typically from watcher re-synthesis) has no state of its own.
+		if !auth.Unavailable && existing.Unavailable {
+			auth.Unavailable = existing.Unavailable
+			auth.NextRetryAfter = existing.NextRetryAfter
+		}
+		if !auth.Quota.Exceeded && existing.Quota.Exceeded {
+			auth.Quota = existing.Quota
+		}
+		if auth.LastError == nil && existing.LastError != nil {
+			auth.LastError = existing.LastError
+		}
+		if auth.Status == StatusActive && existing.Status == StatusError {
+			auth.Status = existing.Status
+			auth.StatusMessage = existing.StatusMessage
 		}
 	}
 	auth.EnsureIndex()
@@ -1829,6 +1875,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	}
 
 	m.hook.OnResult(ctx, result)
+
+	// Persist runtime state to the state cache for restart recovery.
+	if m.stateCache != nil && authSnapshot != nil {
+		m.stateCache.Update(result.AuthID, authSnapshot)
+	}
 }
 
 func ensureModelState(auth *Auth, model string) *ModelState {
@@ -2173,6 +2224,14 @@ func (m *Manager) GetByID(id string) (*Auth, bool) {
 		return nil, false
 	}
 	return auth.Clone(), true
+}
+
+// GetUsageInfo returns the cached quota usage info for an auth credential.
+func (m *Manager) GetUsageInfo(id string) json.RawMessage {
+	if m == nil || m.stateCache == nil || id == "" {
+		return nil
+	}
+	return m.stateCache.GetUsageInfo(id)
 }
 
 // Executor returns the registered provider executor for a provider key.

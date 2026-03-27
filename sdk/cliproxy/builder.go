@@ -48,6 +48,9 @@ type Builder struct {
 
 	// serverOptions contains additional server configuration options.
 	serverOptions []api.ServerOption
+
+	// stateCacheBackend overrides the runtime state persistence backend.
+	stateCacheBackend coreauth.StateStoreBackend
 }
 
 // Hooks allows callers to plug into service lifecycle stages.
@@ -163,6 +166,13 @@ func (b *Builder) WithPostAuthHook(hook coreauth.PostAuthHook) *Builder {
 	return b
 }
 
+// WithStateCacheBackend overrides the runtime state persistence backend (e.g. PostgreSQL).
+// When not set, a file-based backend under AuthDir is used by default.
+func (b *Builder) WithStateCacheBackend(backend coreauth.StateStoreBackend) *Builder {
+	b.stateCacheBackend = backend
+	return b
+}
+
 // Build validates inputs, applies defaults, and returns a ready-to-run service.
 func (b *Builder) Build() (*Service, error) {
 	if b.cfg == nil {
@@ -220,6 +230,12 @@ func (b *Builder) Build() (*Service, error) {
 		}
 
 		coreManager = coreauth.NewManager(tokenStore, selector, nil)
+	}
+	// Initialize runtime state cache for persisting cooldown/quota state across restarts.
+	if b.stateCacheBackend != nil {
+		coreManager.SetStateCacheBackend(b.stateCacheBackend)
+	} else if b.cfg != nil && b.cfg.AuthDir != "" {
+		coreManager.SetStateCacheDir(b.cfg.AuthDir)
 	}
 	// Attach a default RoundTripper provider so providers can opt-in per-auth transports.
 	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())

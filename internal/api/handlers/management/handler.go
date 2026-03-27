@@ -48,6 +48,7 @@ type Handler struct {
 	envSecret           string
 	logDir              string
 	postAuthHook        coreauth.PostAuthHook
+	kv                  KVBackend
 }
 
 // NewHandler creates a new management handler instance.
@@ -132,6 +133,20 @@ func (h *Handler) SetLogDirectory(dir string) {
 // SetPostAuthHook registers a hook to be called after auth record creation but before persistence.
 func (h *Handler) SetPostAuthHook(hook coreauth.PostAuthHook) {
 	h.postAuthHook = hook
+}
+
+// SetKVBackend configures the key-value storage backend for panel settings persistence.
+func (h *Handler) SetKVBackend(backend KVBackend) {
+	if h != nil {
+		h.kv = backend
+	}
+}
+
+func (h *Handler) kvBackend() KVBackend {
+	if h == nil {
+		return nil
+	}
+	return h.kv
 }
 
 // Middleware enforces access control for management endpoints.

@@ -686,6 +686,9 @@ func (s *Service) Run(ctx context.Context) error {
 		interval := 15 * time.Minute
 		s.coreManager.StartAutoRefresh(context.Background(), interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
+
+		// Probe all credentials in the background to detect quota/auth errors early.
+		go s.coreManager.ProbeAllQuota(context.Background())
 	}
 
 	select {
@@ -723,6 +726,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 		if s.coreManager != nil {
 			s.coreManager.StopAutoRefresh()
+			s.coreManager.StopStateCache()
 		}
 		if s.watcher != nil {
 			if err := s.watcher.Stop(); err != nil {

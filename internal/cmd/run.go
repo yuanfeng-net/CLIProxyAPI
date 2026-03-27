@@ -16,19 +16,19 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// BuilderOption is a function that configures a Builder before Build() is called.
+type BuilderOption func(*cliproxy.Builder)
+
 // StartService builds and runs the proxy service using the exported SDK.
-// It creates a new proxy service instance, sets up signal handling for graceful shutdown,
-// and starts the service with the provided configuration.
-//
-// Parameters:
-//   - cfg: The application configuration
-//   - configPath: The path to the configuration file
-//   - localPassword: Optional password accepted for local management requests
-func StartService(cfg *config.Config, configPath string, localPassword string) {
+func StartService(cfg *config.Config, configPath string, localPassword string, opts ...BuilderOption) {
 	builder := cliproxy.NewBuilder().
 		WithConfig(cfg).
 		WithConfigPath(configPath).
 		WithLocalManagementPassword(localPassword)
+
+	for _, opt := range opts {
+		opt(builder)
+	}
 
 	ctxSignal, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -57,11 +57,15 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 
 // StartServiceBackground starts the proxy service in a background goroutine
 // and returns a cancel function for shutdown and a done channel.
-func StartServiceBackground(cfg *config.Config, configPath string, localPassword string) (cancel func(), done <-chan struct{}) {
+func StartServiceBackground(cfg *config.Config, configPath string, localPassword string, opts ...BuilderOption) (cancel func(), done <-chan struct{}) {
 	builder := cliproxy.NewBuilder().
 		WithConfig(cfg).
 		WithConfigPath(configPath).
 		WithLocalManagementPassword(localPassword)
+
+	for _, opt := range opts {
+		opt(builder)
+	}
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 	doneCh := make(chan struct{})
@@ -86,13 +90,11 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 // WaitForCloudDeploy waits indefinitely for shutdown signals in cloud deploy mode
 // when no configuration file is available.
 func WaitForCloudDeploy() {
-	// Clarify that we are intentionally idle for configuration and not running the API server.
 	log.Info("Cloud deploy mode: No config found; standing by for configuration. API server is not started. Press Ctrl+C to exit.")
 
 	ctxSignal, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Block until shutdown signal is received
 	<-ctxSignal.Done()
 	log.Info("Cloud deploy mode: Shutdown signal received; exiting")
 }

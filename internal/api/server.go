@@ -52,6 +52,7 @@ type serverOptionConfig struct {
 	keepAliveTimeout     time.Duration
 	keepAliveOnTimeout   func()
 	postAuthHook         auth.PostAuthHook
+	kvBackend            managementHandlers.KVBackend
 }
 
 // ServerOption customises HTTP server construction.
@@ -114,6 +115,13 @@ func WithRequestLoggerFactory(factory func(*config.Config, string) logging.Reque
 func WithPostAuthHook(hook auth.PostAuthHook) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.postAuthHook = hook
+	}
+}
+
+// WithKVBackend configures the key-value storage backend for panel settings.
+func WithKVBackend(backend managementHandlers.KVBackend) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.kvBackend = backend
 	}
 }
 
@@ -270,6 +278,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.mgmt.SetLogDirectory(logDir)
 	if optionState.postAuthHook != nil {
 		s.mgmt.SetPostAuthHook(optionState.postAuthHook)
+	}
+	if optionState.kvBackend != nil {
+		s.mgmt.SetKVBackend(optionState.kvBackend)
 	}
 	s.localPassword = optionState.localPassword
 
@@ -640,6 +651,12 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.POST("/iflow-auth-url", s.mgmt.RequestIFlowCookieToken)
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
+
+		// KV store for panel settings persistence (model pricing, etc.)
+		mgmt.GET("/kv", s.mgmt.GetKV)
+		mgmt.PUT("/kv", s.mgmt.PutKV)
+		mgmt.DELETE("/kv", s.mgmt.DeleteKV)
+		mgmt.GET("/kv/keys", s.mgmt.ListKVKeys)
 	}
 }
 
@@ -1018,6 +1035,14 @@ func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {
 		return
 	}
 	s.wsAuthChanged = fn
+}
+
+// SetKVBackend configures the key-value storage backend for the management handler.
+func (s *Server) SetKVBackend(backend managementHandlers.KVBackend) {
+	if s == nil || s.mgmt == nil {
+		return
+	}
+	s.mgmt.SetKVBackend(backend)
 }
 
 // (management handlers moved to internal/api/handlers/management)
